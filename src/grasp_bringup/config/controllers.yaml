@@ -1,0 +1,45 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz — how fast the control loop runs
+
+    # These are the controllers we want available.
+    # They are loaded but not necessarily active at startup.
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+# Configuration for the JointTrajectoryController.
+# This is the default MoveIt2-compatible position controller.
+# It accepts trajectory goals (sequences of joint positions with timestamps)
+# and executes them using PID control internally.
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+
+    # These gains control how tightly the controller tracks the trajectory.
+    # Higher Kp = stiffer tracking, but can cause oscillation.
+    gains:
+      shoulder_pan_joint:  { p: 100.0, i: 0.0, d: 10.0 }
+      shoulder_lift_joint: { p: 100.0, i: 0.0, d: 10.0 }
+      elbow_joint:         { p: 100.0, i: 0.0, d: 10.0 }
+      wrist_1_joint:       { p: 50.0,  i: 0.0, d: 5.0  }
+      wrist_2_joint:       { p: 50.0,  i: 0.0, d: 5.0  }
+      wrist_3_joint:       { p: 50.0,  i: 0.0, d: 5.0  }

@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5">
+
+  <!-- Pull in the official UR5 macro from ur_description.
+       This gives us all the links, joints, and mass/inertia properties. -->
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+  <!-- Tell the UR macro to use the gz_ros2_control hardware interface
+       instead of the real robot driver. This is the key difference between
+       a simulation URDF and a real-hardware URDF. -->
+  <xacro:ur_robot
+    name="ur5"
+    tf_prefix=""
+    parent="world"
+    ur_type="ur5"
+    use_fake_hardware="false"
+    sim_gazebo="true"
+    simulation_controllers="$(find grasp_bringup)/config/controllers.yaml"
+  >
+    <origin xyz="0 0 0.77" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- Fixed world frame — every ROS2 robot needs a root link -->
+  <link name="world"/>
+
+  <!-- Table the robot sits on -->
+  <link name="table">
+    <visual>
+      <geometry><box size="1.2 0.8 0.77"/></geometry>
+      <material name="grey"><color rgba="0.5 0.5 0.5 1.0"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="1.2 0.8 0.77"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="50.0"/>
+      <inertia ixx="1.0" ixy="0" ixz="0" iyy="1.0" iyz="0" izz="1.0"/>
+    </inertial>
+  </link>
+
+  <joint name="table_joint" type="fixed">
+    <parent link="world"/>
+    <child link="table"/>
+    <origin xyz="0 0 0.385" rpy="0 0 0"/>
+  </joint>
+
+</robot>
