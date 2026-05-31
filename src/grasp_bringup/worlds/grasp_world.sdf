@@ -42,5 +42,24 @@
       </link>
     </model>
 
+    <!-- Table the robot sits on. Top surface at z=0.77m matches the robot
+         base origin in the URDF. -->
+    <model name="table">
+      <static>true</static>
+      <pose>0 0 0.385 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.2 0.8 0.77</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.2 0.8 0.77</size></box></geometry>
+          <material>
+            <ambient>0.6 0.4 0.2 1</ambient>
+            <diffuse>0.6 0.4 0.2 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
   </world>
 </sdf>

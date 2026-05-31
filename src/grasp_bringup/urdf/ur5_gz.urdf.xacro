@@ -1,47 +1,55 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5">
 
-  <!-- Pull in the official UR5 macro from ur_description.
-       This gives us all the links, joints, and mass/inertia properties. -->
+  <!-- Kinematic chain: links, joints, mass/inertia for the UR5 -->
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
 
-  <!-- Tell the UR macro to use the gz_ros2_control hardware interface
-       instead of the real robot driver. This is the key difference between
-       a simulation URDF and a real-hardware URDF. -->
+  <!-- Joint control descriptions: the ros2_control state/command interface
+       declarations for each joint (position, velocity, effort) -->
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur_joint_control.xacro"/>
+
+  <!-- Resolve the controllers.yaml path at xacro-processing time so Gazebo
+       receives an absolute filesystem path in the spawned URDF. -->
+  <xacro:property name="controllers_yaml"
+    value="$(find grasp_bringup)/config/controllers.yaml"/>
+
+  <!-- World frame — the fixed root every ROS2 robot tree needs -->
+  <link name="world"/>
+
+  <!-- Instantiate the UR5 kinematic chain.
+       Config files are per-robot-type YAMLs shipped with ur_description.
+       force_abs_paths=true is required for Gazebo (relative paths break). -->
   <xacro:ur_robot
     name="ur5"
     tf_prefix=""
     parent="world"
-    ur_type="ur5"
-    use_fake_hardware="false"
-    sim_gazebo="true"
-    simulation_controllers="$(find grasp_bringup)/config/controllers.yaml"
+    joint_limits_parameters_file="$(find ur_description)/config/ur5/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/ur5/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/ur5/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/ur5/visual_parameters.yaml"
+    force_abs_paths="true"
   >
+    <!-- Place robot base at table-top height (0.77 m) -->
     <origin xyz="0 0 0.77" rpy="0 0 0"/>
   </xacro:ur_robot>
 
-  <!-- Fixed world frame — every ROS2 robot needs a root link -->
-  <link name="world"/>
+  <!-- ros2_control block: declares that Gazebo is the hardware backend.
+       gz_ros2_control/GazeboSimSystem reads joint states from Gazebo physics
+       and sends position/velocity commands back into the simulation. -->
+  <ros2_control name="ur5_gz_system" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <xacro:ur_joint_control_description tf_prefix=""/>
+  </ros2_control>
 
-  <!-- Table the robot sits on -->
-  <link name="table">
-    <visual>
-      <geometry><box size="1.2 0.8 0.77"/></geometry>
-      <material name="grey"><color rgba="0.5 0.5 0.5 1.0"/></material>
-    </visual>
-    <collision>
-      <geometry><box size="1.2 0.8 0.77"/></geometry>
-    </collision>
-    <inertial>
-      <mass value="50.0"/>
-      <inertia ixx="1.0" ixy="0" ixz="0" iyy="1.0" iyz="0" izz="1.0"/>
-    </inertial>
-  </link>
-
-  <joint name="table_joint" type="fixed">
-    <parent link="world"/>
-    <child link="table"/>
-    <origin xyz="0 0 0.385" rpy="0 0 0"/>
-  </joint>
+  <!-- Gazebo system plugin: loads the ros2_control manager inside Gazebo.
+       This is the glue between the Gazebo world and the ros2_control stack. -->
+  <gazebo>
+    <plugin filename="gz_ros2_control-system"
+            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>${controllers_yaml}</parameters>
+    </plugin>
+  </gazebo>
 
 </robot>
