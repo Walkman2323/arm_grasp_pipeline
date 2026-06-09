@@ -1,21 +1,26 @@
 controller_manager:
   ros__parameters:
-    update_rate: 500  # Hz — how fast the control loop runs
+    # How fast the control loop runs (Hz).
+    # Every tick: read joint states from Gazebo, compute controller output, write commands back.
+    # 500 Hz = 2ms per tick. Matches the real UR5 hardware control rate.
+    update_rate: 500
 
-    # These are the controllers we want available.
-    # They are loaded but not necessarily active at startup.
+    # Registry of available controllers — loaded but not yet active at startup.
+    # The spawner nodes in the launch file activate them after registration.
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-# Configuration for the JointTrajectoryController.
-# This is the default MoveIt2-compatible position controller.
-# It accepts trajectory goals (sequences of joint positions with timestamps)
-# and executes them using PID control internally.
+
 joint_trajectory_controller:
   ros__parameters:
+
+    # --- Structural parameters (read-only: set at startup, cannot change at runtime) ---
+
+    # Which joints this controller owns. Must match URDF joint names exactly.
+    # Any trajectory containing joints not in this list will be rejected.
     joints:
       - shoulder_pan_joint
       - shoulder_lift_joint
@@ -24,22 +29,166 @@ joint_trajectory_controller:
       - wrist_2_joint
       - wrist_3_joint
 
+    # What type of command the controller outputs to the hardware interface.
+    # position: output desired angle (rad). Most stable — implicit spring behaviour.
+    # velocity: output desired angular velocity (rad/s).
+    # effort:   output desired torque (Nm). Most direct, requires accurate dynamics model.
     command_interfaces:
       - position
 
+    # What the controller reads from the hardware interface each tick.
+    # Both position and velocity are needed for the PD law:
+    #   position -> proportional error term
+    #   velocity -> derivative error term
     state_interfaces:
       - position
       - velocity
 
+    # Interpolation between trajectory waypoints.
+    # "splines": variable-degree Hermite spline — degree depends on data provided:
+    #   positions only             -> cubic spline (degree 3), zero boundary velocities assumed
+    #   positions + velocities     -> cubic Hermite (degree 3)
+    #   positions + vel + accel    -> quintic Hermite (degree 5)
+    # "none": jump directly to each waypoint at its timestamp, no interpolation.
+    # NOTE: our custom quintic generator (main branch) will send dense pre-sampled
+    # trajectories, making this interpolation essentially a pass-through.
+    interpolation_method: "splines"
+
+    # How often the controller publishes its state to /joint_trajectory_controller/state.
+    # This topic contains desired position, actual position, and error for each joint.
+    # Used for our comparison analysis (logging tracking error).
+    # Separate from update_rate — control runs at 500 Hz, state is broadcast at 100 Hz.
     state_publish_rate: 100.0
+
+    # How often (Hz) the controller sends feedback to the MoveIt2 action client
+    # during trajectory execution. MoveIt2 uses this to monitor progress and
+    # abort if tolerances are violated.
     action_monitor_rate: 20.0
 
-    # These gains control how tightly the controller tracks the trajectory.
-    # Higher Kp = stiffer tracking, but can cause oscillation.
+    # If true, a trajectory goal covering only a subset of the listed joints is accepted.
+    # False is safer — prevents accidentally commanding a partial set and leaving
+    # other joints in an undefined state.
+    allow_partial_joints_goal: false
+
+    # If false, the final waypoint in the trajectory must have zero velocity.
+    # Enforces that the robot comes to a complete stop at the goal.
+    # Set true only for continuous motion tasks (e.g. conveyor tracking).
+    allow_nonzero_velocity_at_trajectory_end: false
+
+    # Interpolate from the last *commanded* state rather than the *measured* state
+    # when a new trajectory arrives. Useful when hardware doesn't perfectly follow
+    # commands (e.g. hydraulic actuators). In simulation, measured == commanded,
+    # so this makes no practical difference here.
+    interpolate_from_desired_state: false
+
+    # Seconds after trajectory end before the controller declares a timeout failure.
+    # 0.0 = disabled (wait indefinitely for the arm to settle).
+    # Set a value if you want strict timing enforcement.
+    cmd_timeout: 0.0
+
+    # --- Trajectory execution constraints ---
+    # These define when the controller aborts an in-progress trajectory.
+
+    constraints:
+      # Seconds of grace time after the trajectory's final timestamp.
+      # If the arm hasn't reached goal within this window, the action returns FAILED.
+      # 1.0s is generous — tighten for strict timing applications.
+      goal_time: 1.0
+
+      # Velocity threshold (rad/s) below which a joint is considered "stopped".
+      # Used when checking if the arm has settled at the goal position.
+      stopped_velocity_tolerance: 0.01
+
+      # Per-joint limits. Both are in radians.
+      # trajectory: max deviation from the desired path during execution.
+      #   If the actual position drifts more than this from the planned path
+      #   at any point, the trajectory is aborted immediately (safety stop).
+      # goal: max deviation from the final desired position.
+      #   If the arm doesn't arrive within this tolerance, action returns FAILED.
+      shoulder_pan_joint:  { trajectory: 0.5, goal: 0.01 }
+      shoulder_lift_joint: { trajectory: 0.5, goal: 0.01 }
+      elbow_joint:         { trajectory: 0.5, goal: 0.01 }
+      wrist_1_joint:       { trajectory: 0.5, goal: 0.01 }
+      wrist_2_joint:       { trajectory: 0.5, goal: 0.01 }
+      wrist_3_joint:       { trajectory: 0.5, goal: 0.01 }
+
+    # --- PID gains ---
+    # Control law per joint: output = Kp*(q_des - q) + Kd*(dq_des - dq) + Ki*integral(error)
+    #
+    # Shoulder joints (pan, lift) move the heaviest links — high inertia, gravity load.
+    # Higher Kp and Kd needed for stiff, responsive tracking.
+    #
+    # Wrist joints move small, light links — lower inertia.
+    # Lower gains prevent overshoot and oscillation on low-mass links.
+    #
+    # Parameters per joint:
+    #   p:               Proportional gain. Higher = stiffer, faster response, risk of oscillation.
+    #   i:               Integral gain. Eliminates steady-state error. Risk of windup.
+    #                    Set to 0 in simulation (ideal physics has no persistent disturbances).
+    #   d:               Derivative gain. Damping — resists fast changes, reduces overshoot.
+    #   i_clamp_max/min: Anti-windup limits on integral accumulation.
+    #                    Prevents the integral from growing unbounded if the arm is blocked.
+    #   ff_velocity_scale: Feedforward velocity weight.
+    #                    output += ff_velocity_scale * desired_velocity
+    #                    Anticipates motion without waiting for error to develop.
+    #                    Set to 0.0 now — your custom controller on main branch will
+    #                    implement proper gravity feedforward instead.
+    #   antiwindup_strat: How to prevent integral windup when output saturates.
+    #                    "none": rely on i_clamp only.
+    #                    "conditional_integration": stop integrating when saturated.
+    #                    "back_calculation": feed saturation error back (smoother recovery).
+
     gains:
-      shoulder_pan_joint:  { p: 100.0, i: 0.0, d: 10.0 }
-      shoulder_lift_joint: { p: 100.0, i: 0.0, d: 10.0 }
-      elbow_joint:         { p: 100.0, i: 0.0, d: 10.0 }
-      wrist_1_joint:       { p: 50.0,  i: 0.0, d: 5.0  }
-      wrist_2_joint:       { p: 50.0,  i: 0.0, d: 5.0  }
-      wrist_3_joint:       { p: 50.0,  i: 0.0, d: 5.0  }
+      shoulder_pan_joint:
+        p: 100.0
+        i: 0.0
+        d: 10.0
+        ff_velocity_scale: 0.0
+        i_clamp_max:  1.0
+        i_clamp_min: -1.0
+        antiwindup_strat: "conditional_integration"
+
+      shoulder_lift_joint:
+        p: 100.0
+        i: 0.0
+        d: 10.0
+        ff_velocity_scale: 0.0
+        i_clamp_max:  1.0
+        i_clamp_min: -1.0
+        antiwindup_strat: "conditional_integration"
+
+      elbow_joint:
+        p: 100.0
+        i: 0.0
+        d: 10.0
+        ff_velocity_scale: 0.0
+        i_clamp_max:  1.0
+        i_clamp_min: -1.0
+        antiwindup_strat: "conditional_integration"
+
+      wrist_1_joint:
+        p: 50.0
+        i: 0.0
+        d: 5.0
+        ff_velocity_scale: 0.0
+        i_clamp_max:  0.5
+        i_clamp_min: -0.5
+        antiwindup_strat: "conditional_integration"
+
+      wrist_2_joint:
+        p: 50.0
+        i: 0.0
+        d: 5.0
+        ff_velocity_scale: 0.0
+        i_clamp_max:  0.5
+        i_clamp_min: -0.5
+        antiwindup_strat: "conditional_integration"
+
+      wrist_3_joint:
+        p: 50.0
+        i: 0.0
+        d: 5.0
+        ff_velocity_scale: 0.0
+        i_clamp_max:  0.5
+        i_clamp_min: -0.5
+        antiwindup_strat: "conditional_integration"
